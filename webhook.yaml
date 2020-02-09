@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Webhook endpoint for Bitbucket server
+
+Resources:
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+        - arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess
+
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref AWS::StackName
+      Description: Webhook endpoint for Bitbucket server
+
+  MethodEventsPOST:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !GetAtt Api.RootResourceId
+      AuthorizationType: NONE
+      HttpMethod: POST
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Content-Type: true
+            method.response.header.Content-Length: true
+            method.response.header.Cache-Control: true
+            method.response.header.Strict-Transport-Security: true
+            method.response.header.X-XSS-Protection: true
+            method.response.header.X-Content-Type-Options: true
+      Integration:
+        Credentials: !GetAtt ApiRole.Arn
+        IntegrationHttpMethod: ANY
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestParameters:
+          integration.request.path.object: context.requestId
+          integration.request.header.X-Amz-Target: "'AWSEvents.PutEvents'"
+          integration.request.header.Content-Type: "'application/x-amz-json-1.1'"
+        RequestTemplates:
+          application/json: !Sub |-
+            #set($original = $input.path('$'))
+            {
+              "Entries": [
+                {
+                  "Source": "bitbucket-integration",
+                  "EventBusName": "default",
+                  "Detail": "$input.json('$').replaceAll('\"','\\\"')",
+                  "DetailType": "$original.repository.name"
+                }
+              ]
+            }
+        Type: AWS
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:events:action/PutEvents
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Cache-Control: "'no-cache, no-store, must-revalidate'"
+              method.response.header.Strict-Transport-Security: "'max-age=31536000; includeSubDomains'"
+              method.response.header.X-XSS-Protection: "'1; mode=block'"
+              method.response.header.X-Content-Type-Options: "'nosniff'"
+  
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 7
+
+  ApiExecutionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub
+        - API-Gateway-Execution-Logs_${RestApi}/v1
+        - { RestApi: !Ref Api }
+      RetentionInDays: 7
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: MethodEventsPOST
+    Properties:
+      RestApiId: !Ref Api
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn: ApiExecutionLogGroup
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref ApiGatewayDeployment
+      StageName: v1

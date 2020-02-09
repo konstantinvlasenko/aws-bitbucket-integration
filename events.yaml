@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Bitbucket events delivered by webhook
+
+Parameters:
+  webhookstackname:
+    Description: Name of CloudFormation stack created by webhook.yaml
+    Type: String
+    Default: bitbucket-integration
+  bitbucketserverurl:
+    Type: String
+    Description: URL of your Bitbucket Server e.g. http://server:port
+  bitbucketrepositoryname:
+    Description: Your Bitbucket repository name
+    Type: String
+    MinLength: 3
+  bitbuckettoken:
+    Type: String
+    Description: Personal token generated to access the repositories
+    NoEcho: true
+
+Resources:
+  S3BucketCodePipeline:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  KMSKey: 
+    Type: AWS::KMS::Key
+    Properties: 
+      Description: CMK used by the Lambda Function to encrypt the environment variables
+      KeyPolicy: 
+        Version: 2012-10-17
+        Id: root
+        Statement:
+        -
+            Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal: 
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:decrypt
+                Resource:
+                  - !GetAtt KMSKey.Arn
+
+  Download:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      KmsKeyArn: !GetAtt KMSKey.Arn
+      Runtime: nodejs12.x
+      Code:
+        ZipFile: !Sub |
+          'use strict';
+          const AWS = require('aws-sdk');
+          const s3 = new AWS.S3();
+          const https = require('https');
+          exports.handler = async (event) => {
+            const { message, projectName, repoName, branch} = JSON.parse(event);
+            return new Promise((resolve, reject) => {
+              const request = https.get(
+                process.env.BITBUCKET_SERVER_URL + '/rest/api/latest/projects/' + projectName + '/repos/' + repoName + '/archive?at=refs/heads/' + branch + '&format=zip',
+                { headers: { Authorization: 'Bearer ' + process.env.BITBUCKET_TOKEN } },
+                (response) => {
+                const params = {
+                  Bucket: process.env.S3BUCKET,
+                  Key: projectName + '/' + repoName + '/' + branch + '.zip',
+                  Body: response,
+                  Metadata: {
+                    'codepipeline-artifact-revision-summary': message
+                  }
+                };
+                s3.upload(params, (err, data) => {
+                  if (err) reject(err);
+                  else resolve();  
+                });
+              });
+              request.on('error', (err) => reject(err));
+            });
+          };
+      Environment:
+        Variables:
+          BITBUCKET_SERVER_URL: !Ref bitbucketserverurl
+          BITBUCKET_TOKEN: !Ref bitbuckettoken
+          S3BUCKET: !Ref S3BucketCodePipeline
+
+  EventsInvokeDownloadPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      FunctionName: !GetAtt Download.Arn
+
+  CatchAllLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub 
+        - /aws/events/${webhookstackname}/${bitbucketrepositoryname}/CatchAll
+        -
+          webhookstackname: !Ref webhookstackname
+          bitbucketrepositoryname: !Ref bitbucketrepositoryname
+      RetentionInDays: 30
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: TrustEventsToStoreLogEvent
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt CatchAllLogGroup.Arn
+
+  CatchAll: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: !Sub
+        - Bitbucket events for ${bitbucketrepositoryname}
+        -
+          bitbucketrepositoryname: !Ref bitbucketrepositoryname
+      RoleArn: !GetAtt EventBridgeRole.Arn
+      EventPattern: 
+        source: 
+          - !Ref webhookstackname
+        detail-type:
+          - !Ref bitbucketrepositoryname
+      State: ENABLED
+      Targets: 
+        - 
+          Arn: !GetAtt CatchAllLogGroup.Arn
+          Id: !Sub
+            - ${bitbucketrepositoryname}-CatchAll
+            -
+              bitbucketrepositoryname: !Ref bitbucketrepositoryname
+        - 
+          Arn: !GetAtt Download.Arn
+          Id: !Ref Download
+          InputTransformer:
+            InputPathsMap:
+              author: $.detail.actor.name
+              projectName: $.detail.repository.project.key
+              repoName: $.detail.repository.name
+              branch: $.detail.changes[0].ref.displayId
+              commit: $.detail.changes[0].toHash
+            InputTemplate: '"{\"message\":\"<commit> by <author>\", \"projectName\":\"<projectName>\", \"repoName\":\"<repoName>\", \"branch\":\"<branch>\"}"'
+
+Outputs:
+  S3BucketCodePipeline:
+    Value: !Ref S3BucketCodePipeline      

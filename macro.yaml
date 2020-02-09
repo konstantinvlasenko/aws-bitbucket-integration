@@ -1,0 +1,54 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: CloudFormation Transformation Macros
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  EventRuleTargetsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: nodejs12.x
+      Code:
+        ZipFile: !Sub |
+          'use strict';
+          exports.handler = async (event) => {
+            console.log(JSON.stringify(event));
+            const resources = event.fragment.Resources;
+            const resources_to_transform = Object.keys(resources).filter(r => resources[r].Type === 'AWS::Events::Rule' && !resources[r].Properties.Targets);
+            resources_to_transform.forEach((r) => {
+              resources[r].Properties.Targets = event.templateParameterValues.arns.map((a, index) => {
+                return {
+                  Arn: { 'Fn::Select': [index , { Ref: 'arns' } ] },
+                  Id: a.split(':')[4] + '-' + a.split(':')[5].split('/')[1]
+                };
+              });
+            });
+            console.log(JSON.stringify(event.fragment));
+            return {
+              requestId: event.requestId,
+              status: 'success',
+              fragment: event.fragment
+            };
+          };
+
+  EventRuleTargetsMacro:
+    Type: AWS::CloudFormation::Macro
+    Properties:
+      Name: EventsRuleTargets
+      FunctionName: !GetAtt EventRuleTargetsFunction.Arn

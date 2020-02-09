@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: EventsRuleTargets
+Description: Forwards Bitbucket events delivered by webhook to other AWS accounts
+
+Parameters:
+  webhookstackname:
+    Description: Name of CloudFormation stack created by webhook.yaml
+    Type: String
+    Default: bitbucket-integration
+  arns:
+    Description: Receiver Event Bus ARNs. On the receiver account, edit the permissions on either the default event bus or a custom event bus to allow this AWS account to send events to the receiver account.
+    Type: List<String>
+
+Resources:
+  ForwardRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: TrustEventsToForwardEvents
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Ref arns
+
+  Forward: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: Forwards Bitbucket events to other AWS accounts
+      RoleArn: !GetAtt ForwardRole.Arn
+      EventPattern: 
+        source: 
+          - !Ref webhookstackname
+      State: ENABLED
