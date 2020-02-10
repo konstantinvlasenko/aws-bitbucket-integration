@@ -9,10 +9,6 @@ Parameters:
   bitbucketserverurl:
     Type: String
     Description: URL of your Bitbucket Server e.g. http://server:port
-  bitbucketrepositoryname:
-    Description: Your Bitbucket repository name
-    Type: String
-    MinLength: 3
   bitbuckettoken:
     Type: String
     Description: Personal token generated to access the repositories
@@ -74,6 +70,10 @@ Resources:
   Download:
     Type: AWS::Lambda::Function
     Properties:
+      FunctionName: !Sub
+        - ${webhookstackname}-download
+        -
+          webhookstackname: !Ref webhookstackname
       Handler: index.handler
       Role: !GetAtt LambdaRole.Arn
       KmsKeyArn: !GetAtt KMSKey.Arn
@@ -124,10 +124,9 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties: 
       LogGroupName: !Sub 
-        - /aws/events/${webhookstackname}/${bitbucketrepositoryname}/CatchAll
+        - /aws/events/${webhookstackname}/CatchAll
         -
           webhookstackname: !Ref webhookstackname
-          bitbucketrepositoryname: !Ref bitbucketrepositoryname
       RetentionInDays: 30
 
   EventBridgeRole:
@@ -157,24 +156,23 @@ Resources:
   CatchAll: 
     Type: AWS::Events::Rule
     Properties: 
-      Description: !Sub
-        - Bitbucket events for ${bitbucketrepositoryname}
+      Name: !Sub
+        - ${webhookstackname}-CatchAll
         -
-          bitbucketrepositoryname: !Ref bitbucketrepositoryname
+          webhookstackname: !Ref webhookstackname
+      Description: Bitbucket events
       RoleArn: !GetAtt EventBridgeRole.Arn
       EventPattern: 
         source: 
           - !Ref webhookstackname
-        detail-type:
-          - !Ref bitbucketrepositoryname
       State: ENABLED
       Targets: 
         - 
           Arn: !GetAtt CatchAllLogGroup.Arn
           Id: !Sub
-            - ${bitbucketrepositoryname}-CatchAll
+            - ${webhookstackname}-CatchAll
             -
-              bitbucketrepositoryname: !Ref bitbucketrepositoryname
+              webhookstackname: !Ref webhookstackname
         - 
           Arn: !GetAtt Download.Arn
           Id: !Ref Download
@@ -192,6 +190,10 @@ Outputs:
     Value: !Ref S3BucketCodePipeline
     Export:
       Name: !Sub
-        - bitbucket-integration-${bitbucketrepositoryname}
+        - ${webhookstackname}-email-service
         - 
-          bitbucketrepositoryname: !Ref bitbucketrepositoryname
+          webhookstackname: !Ref webhookstackname
+  S3Bucket:
+    Value: !Ref S3BucketCodePipeline
+    Export:
+      Name: !Ref webhookstackname     
