@@ -189,4 +189,9 @@ Resources:
 
 Outputs:
   S3BucketCodePipeline:
-    Value: !Ref S3BucketCodePipeline      
+    Value: !Ref S3BucketCodePipeline
+    Export:
+      Name: !Sub
+        - bitbucket-integration-${bitbucketrepositoryname}
+        - 
+          bitbucketrepositoryname: !Ref bitbucketrepositoryname
