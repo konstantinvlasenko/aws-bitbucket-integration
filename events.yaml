@@ -66,6 +66,12 @@ Resources:
                   - kms:decrypt
                 Resource:
                   - !GetAtt KMSKey.Arn
+              - Effect: Allow
+                Action:
+                  - logs:PutResourcePolicy
+                  - logs:DeleteResourcePolicy
+                Resource:
+                  - !GetAtt CatchAllLogGroup.Arn
 
   Download:
     Type: AWS::Lambda::Function
@@ -143,7 +149,7 @@ Resources:
               - sts:AssumeRole
       Path: /
       Policies:
-        - PolicyName: TrustEventsToStoreLogEvent
+        - PolicyName: EventsCanStoreLogEvent
           PolicyDocument:
             Version: 2012-10-17
             Statement:
@@ -175,7 +181,7 @@ Resources:
               webhookstackname: !Ref webhookstackname
         - 
           Arn: !GetAtt Download.Arn
-          Id: !Ref Download
+          Id: bitbucket-integration-download
           InputTransformer:
             InputPathsMap:
               author: $.detail.actor.name
@@ -184,6 +190,76 @@ Resources:
               branch: $.detail.changes[0].ref.displayId
               commit: $.detail.changes[0].toHash
             InputTemplate: '"{\"message\":\"<commit> by <author>\", \"projectName\":\"<projectName>\", \"repoName\":\"<repoName>\", \"branch\":\"<branch>\"}"'
+
+  PutResourcePolicy:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: nodejs12.x
+      Code:
+        ZipFile: !Sub |
+          'use strict';
+          const AWS = require('aws-sdk');
+          const cloudwatchlogs = new AWS.CloudWatchLogs();
+          const cfnResp = require('cfn-response');
+          exports.handler =  (event, context) => {
+            console.log(JSON.stringify(event));
+            const props = event.ResourceProperties;
+            if (event.RequestType === "Delete") {
+              cloudwatchlogs.deleteResourcePolicy({
+                policyName: props.Name
+              }, (err, data) => {
+                if (err && err.code !== 'ResourceNotFoundException') {
+                  console.log(err);
+                  cfnResp.send(event, context, cfnResp.FAILED);
+                } else {
+                  cfnResp.send(event, context, cfnResp.SUCCESS, { Data: 'SUCCESS' });
+                }
+              });
+            } else if(event.RequestType === "Create") {
+              cloudwatchlogs.putResourcePolicy({
+                policyDocument: JSON.stringify(props.Document),
+                policyName: props.Name
+              }, (err, data) => {
+                if (err) {
+                  console.log(err);
+                  cfnResp.send(event, context, cfnResp.FAILED);
+                } else {
+                  cfnResp.send(event, context, cfnResp.SUCCESS, { Data: 'SUCCESS' });
+                }
+              });
+            } else {
+              cfnResp.send(event, context, cfnResp.SUCCESS, { Data: 'SUCCESS' });
+            }
+          };
+
+  PutResourcePolicyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: 
+      LogGroupName: !Sub 
+        - /aws/lambda/${Function}
+        - { Function: !Ref PutResourcePolicy }
+      RetentionInDays: 1
+
+  CatchAllLogGroupResourcePolicy:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !GetAtt PutResourcePolicy.Arn
+      Name: TrustEventsToStoreLogEvent
+      Document:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+                - delivery.logs.amazonaws.com
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !GetAtt CatchAllLogGroup.Arn
 
 Outputs:
   S3BucketCodePipeline:
