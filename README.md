@@ -1,2 +1,3 @@
-# aws-bitbucket-integration
-Integrates AWS with the Bitbucket Server
+## About
+
+![Infrastructure](.images/diagram.png)
