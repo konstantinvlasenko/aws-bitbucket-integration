@@ -1,3 +1,3 @@
 ## About
 
-![Infrastructure](.images/diagram.png)
+![Infrastructure](.images/overview.png)
