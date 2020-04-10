@@ -262,14 +262,7 @@ Resources:
             Resource: !GetAtt CatchAllLogGroup.Arn
 
 Outputs:
-  S3BucketCodePipeline:
-    Value: !Ref S3BucketCodePipeline
-    Export:
-      Name: !Sub
-        - ${webhookstackname}-email-service
-        - 
-          webhookstackname: !Ref webhookstackname
   S3Bucket:
     Value: !Ref S3BucketCodePipeline
     Export:
-      Name: !Ref webhookstackname     
+      Name: !Ref webhookstackname
